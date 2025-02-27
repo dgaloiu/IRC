@@ -1,2 +1,106 @@
-# IRC
-Server using IRC Protocol
+# ft_irc
+
+## References
+RFC 1459, 2812(most usefull), 2813
+
+## Be able to authenticate, set a nickname, a username messages using your reference client
+
+### set pass:
+	Replies: ERR_NEEDMOREPARAMS, ERR_ALREADYREGISTRED 
+	
+	ex: PASS secretpasswordhere
+### set nickname:
+	Replies: ERR_NONICKNAMEGIVEN, ERR_ERRONEUSNICKNAME, ERR_NICKNAMEINUSE, ERR_NICKCOLLISION, ERR_UNAVAILRESOURCE, ERR_RESTRICTED
+
+	ex: NICK user
+### set username:
+	Replies: ERR_NEEDMOREPARAMS, ERR_ALREADYREGISTRED
+
+	ex: USER user user localhost :user
+### authentificate:
+A "PASS" command is not required for either client or server connection to be registered, but it must precede the server message or the latter of the NICK/USER combination
+1. Pass message
+2. Nick message
+3. User message
+
+## Join a channel, send and receive private
+* JOIN
+	```
+	Replies:
+				ERR_NEEDMOREPARAMS	ERR_BANNEDFROMCHAN
+				ERR_INVITEONLYCHAN	ERR_BADCHANNELKEY
+				ERR_CHANNELISFULL	ERR_BADCHANMASK
+				ERR_NOSUCHCHANNEL	ERR_TOOMANYCHANNELS
+				ERR_TOOMANYTARGETS	ERR_UNAVAILRESOURCE
+				RPL_TOPIC
+	```
+* PART
+	```
+	Replies:
+				ERR_NEEDMOREPARAMS
+				ERR_NOSUCHCHANNEL
+				ERR_NOTONCHANNEL
+	```
+* MODE
+	```
+	Replies:	ERR_NEEDMOREPARAMS		ERR_KEYSET
+				ERR_NOCHANMODES			ERR_CHANOPRIVSNEEDED
+				ERR_USERNOTINCHANNEL	ERR_UNKNOWNMODE
+				RPL_CHANNELMODEIS
+				RPL_BANLIST				RPL_ENDOFBANLIST
+				RPL_EXCEPTLIST			RPL_ENDOFEXCEPTLIST
+				RPL_INVITELIST			RPL_ENDOFINVITELIST
+				RPL_UNIQOPIS
+	```
+* KICK
+	```
+	Replies:
+	
+				ERR_NEEDMOREPARAMS		ERR_NOSUCHCHANNEL
+				ERR_BADCHANMASK			ERR_CHANOPRIVSNEEDED
+				ERR_USERNOTINCHANNEL	ERR_NOTONCHANNEL
+	```
+* PART
+	```
+	Replies:
+			ERR_NEEDMOREPARAMS ERR_NOSUCHCHANNEL ERR_NOTONCHANNEL
+	```
+* QUIT
+	```
+	Replies:
+			None
+	```
+* PRIVMSG/NOTICE
+	```
+	Replies:
+			ERR_NORECIPIENT			ERR_NOTEXTTOSEND
+			ERR_CANNOTSENDTOCHAN	ERR_NOTOPLEVEL
+			ERR_WILDTOPLEVEL		ERR_TOOMANYTARGETS
+			ERR_NOSUCHNICK			RPL_AWAY
+	```
+
+* TOPIC
+	```
+	Replies:
+			ERR_NEEDMOREPARAMS		ERR_NOTONCHANNEL
+			RPL_NOTOPIC				RPL_TOPIC
+			ERR_CHANOPRIVSNEEDED	ERR_NOCHANMODES
+
+	```
+* INVITE
+	```
+	Replies:
+			ERR_NEEDMOREPARAMS              ERR_NOSUCHNICK
+			ERR_NOTONCHANNEL                ERR_USERONCHANNEL
+			ERR_CHANOPRIVSNEEDED
+			RPL_INVITING                    RPL_AWAY
+	```
+* OPER
+	```
+	Replies:
+			ERR_NEEDMOREPARAMS              RPL_YOUREOPER
+			ERR_NOOPERHOST                  ERR_PASSWDMISMATCH
+	```
+
+## Numeric Replies
+...
