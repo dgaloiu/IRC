@@ -1,387 +1,178 @@
-#include <utility>
-#include <cstring>
-#include "server.hpp"
+#include "Server.hpp"
+#include "Colors.hpp"
+#include "Commands.hpp"
 
-
-IRCServer::IRCServer(int port, std::string pass)
+int Server::manageServerLoop()
 {
-	this->name = "ircserv.24.bruh";
-	this->serv_pass = pass;
-	std::pair<std::string, climsg_func> msg_tuple[] = {std::make_pair("PASS",  &IRCServer::pass_cmd),
-	std::make_pair("NICK",  &IRCServer::nick_cmd), std::make_pair("USER",  &IRCServer::user_cmd),
-	std::make_pair("QUIT",  &IRCServer::quit_cmd), std::make_pair("PRIVMSG",  &IRCServer::privmsg_cmd), std::make_pair("NOTICE",  &IRCServer::notice_cmd),
-	std::make_pair("PING",  &IRCServer::ping_cmd) , std::make_pair("PONG",  &IRCServer::pong_cmd),
-	std::make_pair("JOIN",  &IRCServer::join_cmd) , std::make_pair("PART",  &IRCServer::part_cmd),
-	std::make_pair("TOPIC",  &IRCServer::topic_cmd), std::make_pair("MODE",  &IRCServer::mode_cmd),
-	std::make_pair("INVITE",  &IRCServer::invite_cmd), std::make_pair("KICK",  &IRCServer::kick_cmd)
-	};
-	for (size_t j = 0; j < (sizeof(msg_tuple) / sizeof(msg_tuple[0])); ++j)
-		this->commands[msg_tuple[j].first] = msg_tuple[j].second;
+	std::vector<pollfd> poll_fds;
+	pollfd server_poll_fd;
 
-	std::pair<char, ChanMode*> chanmode_tuple[] = {
-	std::make_pair('i', new InviteOnlyMode()), std::make_pair('t', new TopicRestrictMode()),
-	std::make_pair('k', new KeyMode()), std::make_pair('o', new ChanOpMode()),
-	std::make_pair('l', new UserLimitMode())
-	};
-	for (size_t j = 0; j < (sizeof(chanmode_tuple) / sizeof(chanmode_tuple[0])); ++j)
-		this->chanmodes[chanmode_tuple[j].first] = chanmode_tuple[j].second;
+	server_poll_fd.fd = _server_socket_fd;
+	server_poll_fd.events = POLLIN;
 
-	this->init_replies();
-	this->servfd = socket(AF_INET, SOCK_STREAM , 0);
-	int optval = true;
-	setsockopt(this->servfd,SOL_SOCKET,SO_REUSEADDR, &optval, sizeof(int));
-	if (this->servfd == -1)
+	poll_fds.push_back(server_poll_fd);
+
+	while (server_shutdown == false)
 	{
-		//std::cerr << "Failed to create Server socket" << std::endl;
-		//int err = errno;
-		//perror(strerror(err));
-		throw "Failed to create Server socket";
-	}
-	this->serv_addr.sin_addr.s_addr = INADDR_ANY;
-	this->serv_addr.sin_family = AF_INET;
-	this->serv_addr.sin_port = htons(port);
-	int bind_error = bind(this->servfd , (struct sockaddr *) &this->serv_addr , sizeof(this->serv_addr));
-	if (bind_error == -1)
-	{
-		//std::cerr << "Failed to bind Server socket" << std::endl;
-		//int err = errno;
-		//perror(strerror(err));
-		throw "Failed to bind Server socket";
-	}
-	listen(this->servfd , 5);
-	pollfd re = {this->servfd, POLLIN, 0};
-	this->cli_fds.push_back(re); // push back Pauline
-	this->init_handler();
-	std::cout << "Server Launching..." << std::endl;
-}
+		std::vector<pollfd> new_pollfds; // tmp struct hosting potential newly-created fds
 
-IRCServer::~IRCServer()
-{
-	std::cout << "Server Quitting..." << std::endl;
-	for (size_t j = 0; j < this->cli_fds.size(); ++j)
-	{
-		close(this->cli_fds[j].fd);
-	}
-	for (std::map<char, ChanMode*>::iterator it = this->chanmodes.begin(); it != this->chanmodes.end(); ++it)
-	{
-		delete it->second;
-	}
-}
-
-void IRCServer::accept_client()
-{
-	Client new_cli;
-	new_cli.cliaddrlen = 0;
-	std::memset(&new_cli.cli_addr, 0, sizeof(new_cli.cli_addr));
-	new_cli.socket = accept(this->servfd , (struct sockaddr *) &(new_cli).cli_addr , &(new_cli).cliaddrlen);
-	if (new_cli.socket == -1)
-	{
-		std::cerr << "New client connexion failed\n";
-		return ;
-	}
-
-	struct sockaddr_in hname;
-	socklen_t namelen = sizeof(name);
-	if(getsockname(new_cli.socket, (struct sockaddr*)&hname, &namelen) == -1) {
-		std::cerr << "Could not getsockname" << std::endl;
-	}
-	new_cli.hostname = inet_ntoa(hname.sin_addr);
-
-	
-	new_cli.status =  NOT_CONNECTED;
-	pollfd re = {new_cli.socket, POLLIN, 0};
-	this->cli_fds.push_back(re);
-	this->fd_cli_map[new_cli.socket] = new_cli;
-}
-
-void IRCServer::receive_message(Client &client, std::vector<std::string> tokens)
-{
-	std::string cmd = tokens[0];
-	//toupper cmd;
-	tokens.erase(tokens.begin());
-	try
-	{
-		if (client.status != AUTHENTIFICATED && cmd.compare("QUIT") &&
-			cmd.compare("PASS") && cmd.compare("NICK") && cmd.compare("USER") && cmd.compare("CAP"))
+		if (poll((pollfd *)&poll_fds[0], (unsigned int)poll_fds.size(), -1) <= SUCCESS) // -1 == no timeout
 		{
-			//std::cout << cmd << "," << client.status << "\n";
-			this->send_reply(client, ERR_NOTREGISTERED);
-		}
-		else
-		{
-			(this->*commands.at(cmd))(client, tokens);
-		}
-	}
-	catch (const std::out_of_range &e)
-	{
-		this->send_reply(client, ERR_UNKNOWNCOMMAND, cmd.c_str());
-	}
-}
-
-int IRCServer::manage_message(Client &client)
-{
-	char buf[512];
-
-	memset(buf, 0, 512);
-	int msg_len = recv(client.socket, buf, 512, 0);
-	if (msg_len <= 0) //client disconnect
-	{
-		std::vector<std::string> args;
-		args.push_back("EOF From client");
-		do_quit_cmd(client, args, false);
-		return -1;
-	}
-	std::cout << "cli buff : -" << client.buf << "-\n";
-	client.buf += buf;
-	if (client.buf.size() >= 510)
-	{
-		client.buf.resize(510);
-		client.buf += "\r\n";
-		// std::cout << "after resize client.buf -" << client.buf << "-\n";
-	}
-	size_t found = 0;
-	std::string mes_end = "\n";
-	while ((found = client.buf.find(mes_end, found))
-				!= std::string::npos)
-	{
-			//std::cout << "found is : " << found << std::endl;
-			//std::cout << "Buff avant tronquage : -" << client.buf << "-\n";
-			std::string out = client.buf.substr(0 , found);
-			if (found + 1 <= client.buf.size())
-			{
-				client.buf = client.buf.substr(found + 1);
-				//std::cout << "Buff apres tronquage : -" << client.buf << "-\n";
-			}
-			out.erase(out.size() - (out[out.size() - 1] == '\r'));
-			std::cout << "out : -" << out << "-\n";
-			
-			//print vector
-			if (out.size() == 0)
-				return 0;
-			std::vector<std::string> tokens = tokenize(out);
-			for (size_t i = 0; i < tokens.size(); i++)
-				std::cout << "'" << tokens[i] << "'"<< std::endl;
-			std::cout << std::endl;
-
-			receive_message(client, tokens);
-			found = 0;
-	}
-	return 0;
-}
-
-int IRCServer::setOpOnChan(std::string &nick, Channel& chan, bool status)
-{
-	if (nick_fd_map.count(nick) == 0)
-	{
-		return -1;
-	}
-	Client& nop = this->fd_cli_map[this->nick_fd_map[nick]];
-	if ((status == true && chan.getUserPriv(&nop) == Operator) ||
-	(status == false && chan.getUserPriv(&nop) == Normal))
-		return 0;
-	
-	if (status == true)
-		chan.setUserPriv(&nop, Operator);
-	else
-		chan.setUserPriv(&nop, Normal);
-	return 1;
-}
-
-Client const *IRCServer::getClient(const std::string& nick) const
-{
-	std::map<std::string, int>::const_iterator nickfdi;
-	std::map<int, Client>::const_iterator fdclii;
-	nickfdi = this->nick_fd_map.find(nick);
-	if (nickfdi == this->nick_fd_map.end())
-		return NULL;
-	fdclii = this->fd_cli_map.find(nickfdi->second);
-	if (fdclii == this->fd_cli_map.end())
-		return NULL;
-	return &fdclii->second;
-}
-
-void IRCServer::_debug()
-{
-	std::cerr << "\n---STATE---\n";
-	std::cerr << "Nb Clients(W/ server): " << this-> cli_fds.size() << "\n";
-	std::cerr << "socket serv: " << this->cli_fds[0].fd << "\n";
-	std::map<int, Client>::iterator fdit;
-	std::map<std::string, Channel>::iterator chanit;
-	std::set<std::string>::iterator channameit;
-	for (fdit = this->fd_cli_map.begin(); fdit != this->fd_cli_map.end(); ++fdit)
-	{
-		std::cout << "Nick: <" << fdit->second.nick << "> (socket: " << fdit->first << ")\n";
-		std::cout << "\t in chan:";
-		channameit = fdit->second.chan_list.begin();
-		for (; channameit != fdit->second.chan_list.end(); ++channameit)
-		{
-			std::cout << " " << *channameit;
-		}
-		std::cout << "\n";
-	}
-	std::cout << "Channels: \n";
-	for (chanit = this->channels.begin(); chanit != this->channels.end(); ++chanit)
-	{
-		std::cout << "\t" << chanit->second.getName() << \
-		"(" << chanit->second.getUserNumber() << " users)"<< std::endl;
-	}
-	std::cerr << "-----------\n";
-}
-
-
-void IRCServer::run()
-{
-
-	int nb_events;
-	extern bool g_sigint;
-
-	while(g_sigint != 1)
-	{
-		nb_events = poll(this->cli_fds.data(), this->cli_fds.size(), 0);
-		if (nb_events < 0)
-		{
-			std::cerr << "poll error\n";
-			return ;
-		}
-		// New Connection
-		if (this->cli_fds[0].revents & POLLIN)
-		{
-			
-			this->accept_client();
-		}
-	
-		for (size_t i = 1; i < this->cli_fds.size(); i++)
-		{
-			if (this->cli_fds[i].revents & POLLIN)
-			{
-				manage_message(this->fd_cli_map[this->cli_fds[i].fd]);
-				this->_debug();
-			}
-		}
-		std::map<std::string, Channel>::iterator chanit = this->channels.begin();
-		for ( ; chanit != this->channels.end(); ++chanit)
-		{
-			if (chanit->second.getUserNumber() == 0)
-			{
-				this->channels.erase(chanit->first);
+			if (errno == EINTR)
 				break;
-			}
+			std::cerr << RED << "[Server] Poll error" << RESET << std::endl;
+			throw;
 		}
-	}
-}
 
-std::vector<std::string> IRCServer::tokenize_targets(std::string str)
-{
-	//tokenizer for irc commands
-	std::vector<std::string> tokens;
-	size_t i = 0;
-	size_t j = 0;
-
-	while (i < str.size())
-	{
-		if (str[i] == ',')
+		std::vector<pollfd>::iterator it = poll_fds.begin();
+		while (it != poll_fds.end())
 		{
-			tokens.push_back(str.substr(j, i - j));
-			j = i + 1;
-		}
-		else if ((i == str.size() - 1 && str[i] == '\n') || str[i] == '\r')
-			str.erase(i);
-		++i;
-	}
-	tokens.push_back(str.substr(j, i - j));
-	return tokens;
-}
-
-std::vector<std::string> IRCServer::tokenize(std::string str)
-{
-	std::vector<std::string> tokens;
-	size_t i = 0;
-	size_t j;
-
-	//std::cerr << "COM: '" << str << "'\n";
-	while (str[i] == ' ')
-		++i;
-	j = i;
-	/*
-	//IRC Prefix Part
-	if (str[i] == ':')
-	{
-		++i;
-		while(str[j] != ' ')
-			++j;
-		tokens.push_back(str.substr(i, j - i));
-		i = j;
-	}
-	*/
-	//main part
-	while (i < str.size())
-	{
-		if (str[i] != ' ')
-		{
-			if (str[i] == ':') // We are at the end of msg
+			if (it->revents & POLLIN) // => If the event that occured is a POLLIN (aka "data is ready to recv() on this socket")
 			{
-				std::string end_part = str.substr(i + 1);
-				if (!end_part.empty())
-					tokens.push_back(end_part);
-				return tokens;
+				if (it->fd == _server_socket_fd)
+				{
+					if (this->createClientConnexion(poll_fds, new_pollfds) == CONTINUE)
+						continue;
+				}
+				else // => If the dedicated fd for the Client/Server connection already exists
+				{
+					if (this->handleExistingConnexion(poll_fds, it) == BREAK)
+						break;
+				}
 			}
-			j = i;
-			while (j < str.size() && str[j] != ' ')
-				++j;
-			tokens.push_back(str.substr(i, j - i)); // Push everything before
-			i = j;
+			else if (it->revents & POLLOUT) // = "Alert me when I can send() data to this socket without blocking."
+			{
+				if (handlePolloutEvent(poll_fds, it, it->fd) == BREAK)
+					break;
+			}
+			else if (it->revents & POLLERR)
+			{
+				if (handlePollerEvent(poll_fds, it) == BREAK)
+					break;
+				else
+					return (FAILURE);
+			}
+			it++;
 		}
-		++i;
+		poll_fds.insert(poll_fds.end(), new_pollfds.begin(), new_pollfds.end()); // Add the range of NEW_pollfds in poll_fds (helps recalculating poll_fds.end() in the for loop)
 	}
-	return tokens;
+
+	return (SUCCESS);
 }
 
-void IRCServer::error_cmd(Client &client, std::string arg)
+static int acceptSocket(int listenSocket)
 {
-	std::string err = "ERROR ";
-	err += arg;
-	err += "\r\n";
-	send(client.socket, err.c_str(), err.size(), 0);
+	sockaddr_in client;
+	socklen_t addr_size = sizeof(sockaddr_in);
+	return (accept(listenSocket, (sockaddr *)&client, &addr_size));
 }
 
-bool IRCServer::is_special(char c)
+static void tooManyClients(int client_socket)
 {
-	return(c == '[' || c == ']' || c == '\\' || c == '`' || c == '_' || c == '^' || c == '{' || c == '|' || c == '}');
+	std::cout << RED << ERR_FULL_SERV << RESET << std::endl;
+	send(client_socket, ERR_FULL_SERV, strlen(ERR_FULL_SERV) + 1, 0);
+	close(client_socket);
 }
 
-bool IRCServer::is_nickname(std::string const &nickname)
+int Server::createClientConnexion(std::vector<pollfd> &poll_fds, std::vector<pollfd> &new_pollfds)
 {
-	size_t i = 0;
-	if (nickname.empty() || nickname.size() > 9)
-		return (0);
-	if (std::isalpha(nickname[0]) || is_special(nickname[0]))
+	int client_sock = acceptSocket(_server_socket_fd); // Accepts the socket and returns a dedicated fd for this new Client-Server connexion
+	if (client_sock == -1)
 	{
-		while(++i < nickname.size())
-		{
-			if(!std::isalpha(nickname[i]) && !is_special(nickname[i]) && !std::isdigit(nickname[i]) && nickname[i] != '-')
-				return (0);
-		}
-		return (1);
+		std::cerr << RED << "[Server] Accept() failed" << RESET << std::endl;
+		return (CONTINUE);
 	}
-	return (0);
+	if (poll_fds.size() - 1 < MAX_CLIENT_NB)
+		addClient(client_sock, new_pollfds); // Beware, here we push the new client_socket in NEW_pollfds
+	else
+		tooManyClients(client_sock);
+	return (SUCCESS);
 }
 
-bool IRCServer::is_channame(std::string const &channame)
+static void print(std::string type, int client_socket, char *message)
 {
-	size_t i = 0;
-	std::string chan_letter = "#+!&";
+	if (message)
+		std::cout << std::endl
+				  << type << client_socket << " << "
+				  << BLUE << message << RESET;
+}
 
-	if (channame.size() < 2 || channame.size() > 50)
-		return (0);
-	if (chan_letter.find(channame[0]) != std::string::npos)
+int Server::handleExistingConnexion(std::vector<pollfd> &poll_fds, std::vector<pollfd>::iterator &it)
+{
+	Client *client;
+	client = getClient(this, it->fd);
+	char message[BUF_SIZE_MSG];
+	int read_count;
+
+	memset(message, 0, sizeof(message));
+	read_count = recv(it->fd, message, BUF_SIZE_MSG, 0); // Retrieves the Client's message
+
+	if (read_count <= FAILURE) // when recv returns an error
 	{
-		while(++i < channame.size())
-		{
-			if (channame[i] == ' ' || channame[i] == ',' ||
-				channame[i] == ':' || channame[i] == 9)
-				return (0);
-		}
-		return (1);
+		std::cerr << RED << "[Server] Recv() failed [456]" << RESET << std::endl;
+		delClient(poll_fds, it, it->fd);
+		return (BREAK);
 	}
-	return (0);
+	else if (read_count == 0) // when a client disconnects
+	{
+		std::cout << "[Server] A client just disconnected\n";
+		delClient(poll_fds, it, it->fd);
+		return (BREAK);
+	}
+	else
+	{
+		print("[Client] Message received from client ", it->fd, message); // si affichage incoherent regarder ici
+		client->setReadBuffer(message);
+
+		if (client->getReadBuffer().find("\r\n") != std::string::npos)
+		{
+			try
+			{
+				parseMessage(it->fd, client->getReadBuffer());
+				if (client->getReadBuffer().find("\r\n"))
+					client->getReadBuffer().clear();
+			}
+			catch (const std::exception &e)
+			{
+				std::cout << "[SERVER] Caught exception : ";
+				std::cerr << e.what() << std::endl;
+				if (client->isRegistrationDone() == true)
+					client->setDeconnexionStatus(true);
+				return (BREAK);
+			}
+		}
+	}
+	return (SUCCESS);
+}
+
+int Server::handlePolloutEvent(std::vector<pollfd> &poll_fds, std::vector<pollfd>::iterator &it, const int current_fd)
+{
+	Client *client = getClient(this, current_fd);
+	if (!client)
+		std::cout << "[Server] Did not found connexion to client sorry" << std::endl;
+	else
+	{
+		sendServerRpl(current_fd, client->getSendBuffer());
+		client->getSendBuffer().clear();
+		if (client->getDeconnexionStatus() == true)
+		{
+			delClient(poll_fds, it, current_fd);
+			return (BREAK);
+		}
+	}
+	return (SUCCESS);
+}
+
+int Server::handlePollerEvent(std::vector<pollfd> &poll_fds, std::vector<pollfd>::iterator &it)
+{
+	if (it->fd == _server_socket_fd)
+	{
+		std::cerr << RED << "[Server] Listen socket error" << RESET << std::endl;
+		return (FAILURE);
+	}
+	else
+	{
+		delClient(poll_fds, it, it->fd);
+		return (BREAK);
+	}
 }
